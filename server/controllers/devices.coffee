@@ -4,6 +4,10 @@ deviceManager = require '../models/device'
 appManager = require '../lib/app_manager'
 {getProxy} = require '../lib/proxy'
 
+log = require('printit')
+    date: false
+    prefix: 'controllers:devices'
+
 
 couchdbHost = process.env.COUCH_HOST or 'localhost'
 couchdbPort = process.env.COUCH_PORT or '5984'
@@ -40,7 +44,7 @@ extractCredentials = (header) ->
     if header?
         authDevice = header.replace 'Basic ', ''
         authDevice = new Buffer(authDevice, 'base64').toString 'utf8'
-        # username should be 'owner'
+        # username should be 'owner' or a device name
         username = authDevice.substr(0, authDevice.indexOf(':'))
         password = authDevice.substr(authDevice.indexOf(':') + 1)
         return [username, password]
@@ -240,31 +244,51 @@ module.exports.update = (req, res, next) ->
 
 
 module.exports.remove = (req, res, next) ->
+    [username, password] = extractCredentials req.headers['authorization']
+    deviceName = req.params.login
 
-    authenticator = passport.authenticate 'local', (err, user) ->
-        if err
-            console.log err
-            next err
-        else if user is undefined or not user
+    callback = (next) =>
+        log.info "Check deviceName."
+        checkLogin deviceName, true, (err, device) ->
+            return next err if err?
+            # Remove device
+            removeDevice device, (err) ->
+                if err?
+                    next err
+                else
+                    log.info "It's removed."
+                    res.sendStatus 204
+
+    initAuth req, (user) ->
+        password = user.body.password
+
+        # Test if login is equal to the deviceName
+        # a device can remove itself.
+        if username is deviceName
+            log.info "Device remote itself."
+            deviceManager.isAuthenticated username, password, (auth) =>
+                if auth
+                    callback next
+                else
+                    error = new Error "Request unauthorized"
+                    error.status = 401
+                    next error
+        else if username is 'owner'
+            log.info "Owner remote a device."
+            passport.authenticate 'local', (err, user) =>
+                if err
+                    console.log err
+                    next err
+                else if user is undefined or not user
+                    error = new Error "Bad credentials"
+                    error.status = 401
+                    next error
+                else
+                    callback next
+        else
             error = new Error "Bad credentials"
             error.status = 401
             next error
-        else
-            # Send request to the Data System
-            login = req.params.login
-
-            checkLogin login, true, (err, device) ->
-                return next err if err?
-                # Remove device
-                removeDevice device, (err) ->
-                    if err?
-                        next err
-                    else
-                        res.sendStatus 204
-
-    initAuth req, (user) ->
-        # Check if request is authenticated
-        authenticator user, res
 
 
 module.exports.replication = (req, res, next) ->
